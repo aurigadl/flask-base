@@ -1,7 +1,7 @@
 from datetime import datetime, timedelta
 import os
 from functools import wraps
-from flask import Flask, g, request, jsonify, current_app
+from flask import Flask, g, request, jsonify, url_for
 from flask.ext.sqlalchemy import SQLAlchemy
 from werkzeug.security import generate_password_hash, check_password_hash
 from jwt import DecodeError, ExpiredSignature
@@ -18,30 +18,22 @@ rbac = RBAC(app)
 db = SQLAlchemy(app)
 
 
-# A base model for other database tables to inherit
-class Base(db.Model):
-    __abstract__ = True
+roles_parents = db.Table('roles_parents',
+    db.Column('role_id', db.Integer, db.ForeignKey('role.id'), primary_key=True),
+    db.Column('parent_id', db.Integer, db.ForeignKey('role.id'), primary_key=True)
+)
+
+
+@rbac.as_role_model
+class Role(db.Model, RoleMixin):
+    __tablename__ = 'role'
     id = db.Column(db.Integer, primary_key=True)
     created_at = db.Column(db.DateTime, default=db.func.current_timestamp())
     modified_at = db.Column(db.DateTime, default=db.func.current_timestamp(),
                             onupdate=db.func.current_timestamp())
 
-
-roles_parents = db.Table(
-    'roles_parents',
-    db.Column('role_id', db.Integer, db.ForeignKey('role.id')),
-    db.Column('parent_id', db.Integer, db.ForeignKey('role.id'))
-)
-
-
-@rbac.as_role_model
-class Role(Base, RoleMixin):
-    __tablename__ = 'auth_role'
     name = db.Column(db.String(80), nullable=False, unique=True)
     description = db.Column(db.String(255))
-
-    def __init__(self, name):
-        self.name = name
 
     parents = db.relationship(
         'Role',
@@ -71,14 +63,18 @@ class Role(Base, RoleMixin):
 
 users_roles = db.Table(
     'users_roles',
-    db.Column('user_id', db.Integer, db.ForeignKey('user.id')),
-    db.Column('role_id', db.Integer, db.ForeignKey('role.id'))
+    db.Column('user_id', db.Integer, db.ForeignKey('user.id'), primary_key=True),
+    db.Column('role_id', db.Integer, db.ForeignKey('role.id'), primary_key=True)
 )
 
 
 @rbac.as_user_model
-class User(Base, UserMixin):
-    __tablename__ = 'auth_user'
+class User(db.Model, UserMixin):
+    __tablename__ = 'user'
+    id = db.Column(db.Integer, primary_key=True)
+    created_at = db.Column(db.DateTime, default=db.func.current_timestamp())
+    modified_at = db.Column(db.DateTime, default=db.func.current_timestamp(),
+                            onupdate=db.func.current_timestamp())
     email = db.Column(db.String(255), nullable=False, unique=True)
     password = db.Column(db.String(255), nullable=False)
     display_name = db.Column(db.String(120))
@@ -127,9 +123,6 @@ class User(Base, UserMixin):
         return dict(id=self.id, email=self.email, displayName=self.display_name)
 
 
-db.create_all()
-
-
 def create_token(user):
     payload = {
         'sub': user.id,
@@ -171,14 +164,31 @@ def login_required(f):
     return decorated_function
 
 
-def get_current_user():
-    with curren_app.request_context():
-        return g.user_id
+# Create a user to test with
+@app.before_first_request
+def create_user_role():
+    db.create_all()
+    if not User.query.first():
+        anon = Role('anonymous')
+        guest = User(email='guest@sindominio.co', password='1234',
+                     display_name='Anonymous')
+        guest.roles = Role(anon)
+        anon_guest = users_roles(guest, anon)
+        db.session.add(anon)
+        db.session.add(guest)
+        db.session.add(anon_guest)
+        db.session.commit()
+        db.create_all()
+
 
 # ------ Routes
 @app.route('/')
 def index():
-    return app.send_static_file('index.html')
+    ret_dict = {
+        "Key1": "Value1",
+        "Key2": "value2"
+    }
+    return jsonify(items=ret_dict)
 
 
 @app.route('/api/me')
@@ -199,14 +209,28 @@ def login():
     return jsonify(token=token)
 
 
+@app.route('/api/users', methods=['POST'])
+def new_user():
+    username = request.json.get('username')
+    password = request.json.get('password')
+    if username is None or password is None:
+        abort(400)    # missing arguments
+    if User.query.filter_by(username=username).first() is not None:
+        abort(400)    # existing user
+    user = User(username=username)
+    user.hash_password(password)
+    db.session.add(user)
+    db.session.commit()
+    token = create_token(user)
+    return (jsonify({'username': user.username}, token=token), 201,
+            {'Location': url_for('get_user', id=user.id, _external=True)})
+
+
 @app.route('/auth/signup', methods=['POST'])
 def signup():
     user = User(email=request.json['email'], password=request.json['password'])
     db.session.add(user)
     db.session.commit()
-    token = create_token(user)
-    return jsonify(token=token)
-
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000, debug=True)
