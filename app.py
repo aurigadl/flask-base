@@ -157,10 +157,8 @@ def login_required(f):
             response.status_code = 401
             return response
 
-        g.user_id = payload['sub']
-
+        g.current_user = payload['sub']
         return f(*args, **kwargs)
-
     return decorated_function
 
 
@@ -172,13 +170,26 @@ def create_user_role():
         anon = Role('anonymous')
         guest = User(email='guest@sindominio.co', password='1234',
                      display_name='Anonymous')
-        guest.roles = Role(anon)
-        anon_guest = users_roles(guest, anon)
+        guest.roles.append(anon)
         db.session.add(anon)
         db.session.add(guest)
-        db.session.add(anon_guest)
         db.session.commit()
         db.create_all()
+        g.current_user = guest.id
+        rbac.set_user_loader(g.current_user)
+        print 'User added.'
+        guest.to_json()
+
+
+def get_current_user():
+    if not hasattr(g, 'current_user'):
+        q = User.query.filter(User.email == 'guest@sindominio.co').first()
+        if q:
+            g.current_user = q.id
+    return g.current_user
+
+
+rbac.set_user_loader(get_current_user)
 
 
 # ------ Routes
