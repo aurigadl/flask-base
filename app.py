@@ -1,5 +1,6 @@
 from datetime import datetime, timedelta
 import os
+import jwt
 from functools import wraps
 from flask import Flask, g, request, jsonify, url_for
 from flask.ext.sqlalchemy import SQLAlchemy
@@ -217,6 +218,7 @@ def me():
     return jsonify(user.to_json())
 
 
+@rbac.allow(['anonymous'], methods=['POST'])
 @app.route('/auth/login', methods=['POST'])
 def login():
     user = User.query.filter_by(email=request.json['email']).first()
